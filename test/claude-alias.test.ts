@@ -25,7 +25,7 @@ test("registers config-driven aliases with the expected provider ids and login n
     makeAlias({ slug: "labs", handle: "claude-labs", label: "Labs" }),
   ];
 
-  registerClaudeAliases(pi.asExtensionApi(), {
+  registerClaudeAliases(pi, {
     getModels: () => [makeModel()],
     oauthProvider: createOAuthProvider("Anthropic (Claude Pro/Max)"),
     loadAliases: () => ({ aliases, errors: [] }),
@@ -66,7 +66,7 @@ test("copies Anthropic models and preserves metadata", () => {
   });
 
   registerAnthropicAlias(
-    pi.asExtensionApi(),
+    pi,
     alias,
     createOAuthProvider("Anthropic (Claude Pro/Max)"),
     [sourceModel],
@@ -130,7 +130,7 @@ test("registers oauth-capable aliases even when the built-in catalog is empty", 
     makeAlias({ slug: "work", handle: "claude-work", label: "Work" }),
   ];
 
-  registerClaudeAliases(pi.asExtensionApi(), {
+  registerClaudeAliases(pi, {
     getModels: () => [],
     oauthProvider: createOAuthProvider("Anthropic (Claude Pro/Max)"),
     loadAliases: () => ({ aliases, errors: [] }),
@@ -151,7 +151,7 @@ test("updates footer status with alias handle and short model name", () => {
     model: { provider: "anthropic-work", id: "claude-opus-4-8" },
   });
 
-  registerClaudeAliases(pi.asExtensionApi(), {
+  registerClaudeAliases(pi, {
     getModels: () => [makeModel()],
     oauthProvider: createOAuthProvider("Anthropic (Claude Pro/Max)"),
     loadAliases: () => ({ aliases, errors: [] }),
@@ -161,6 +161,62 @@ test("updates footer status with alias handle and short model name", () => {
   assert.equal(ctx.ui.lastStatus("claude-alias"), "claude-work · opus-4.8");
 });
 
+test("reports config errors once until the message changes", () => {
+  const pi = new FakePi();
+  const aliases = [
+    makeAlias({ slug: "work", handle: "claude-work", label: "Work" }),
+  ];
+  let errorMessage: string | undefined;
+  const ctx = pi.createContext({
+    model: { provider: "anthropic-work", id: "claude-opus-4-8" },
+  });
+
+  registerClaudeAliases(pi, {
+    getModels: () => [makeModel()],
+    oauthProvider: createOAuthProvider("Anthropic (Claude Pro/Max)"),
+    loadAliases: () => ({
+      aliases,
+      errors: errorMessage ? [errorMessage] : [],
+    }),
+  });
+
+  errorMessage = "broken config";
+  pi.emit("session_start", ctx);
+  assert.equal(ctx.ui.notifications.length, 1);
+
+  pi.emit("before_agent_start", ctx);
+  assert.equal(ctx.ui.notifications.length, 1);
+
+  errorMessage = "still broken";
+  pi.emit("model_select", ctx);
+  assert.equal(ctx.ui.notifications.length, 2);
+  assert.equal(
+    ctx.ui.notifications[1]?.message,
+    "claude-alias config: still broken",
+  );
+});
+
+test("clears footer status on session shutdown", () => {
+  const pi = new FakePi();
+  const aliases = [
+    makeAlias({ slug: "work", handle: "claude-work", label: "Work" }),
+  ];
+  const ctx = pi.createContext({
+    model: { provider: "anthropic-work", id: "claude-opus-4-8" },
+  });
+
+  registerClaudeAliases(pi, {
+    getModels: () => [makeModel()],
+    oauthProvider: createOAuthProvider("Anthropic (Claude Pro/Max)"),
+    loadAliases: () => ({ aliases, errors: [] }),
+  });
+  pi.emit("session_start", ctx);
+
+  assert.equal(ctx.ui.lastStatus("claude-alias"), "claude-work · opus-4.8");
+  pi.emit("session_shutdown", ctx);
+  assert.equal(ctx.ui.lastStatus("claude-alias"), undefined);
+});
+
 test("unregisters stale providers when alias config changes", () => {
   const pi = new FakePi();
   let aliases = [
@@ -168,7 +224,7 @@ test("unregisters stale providers when alias config changes", () => {
   ];
   const ctx = pi.createContext();
 
-  registerClaudeAliases(pi.asExtensionApi(), {
+  registerClaudeAliases(pi, {
     getModels: () => [makeModel()],
     oauthProvider: createOAuthProvider("Anthropic (Claude Pro/Max)"),
     loadAliases: () => ({ aliases, errors: [] }),

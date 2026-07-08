@@ -22,16 +22,6 @@ export interface ClaudeAliasLoadResult {
   errors: string[];
 }
 
-interface RawClaudeAliasFile {
-  aliases?: unknown;
-}
-
-interface RawClaudeAliasEntry {
-  slug?: unknown;
-  handle?: unknown;
-  label?: unknown;
-}
-
 interface ParsedAliasFile {
   aliases: ClaudeAliasDefinition[] | undefined;
   errors: string[];
@@ -89,7 +79,7 @@ export function parseClaudeAliasConfig(
     };
   }
 
-  const aliasesValue = (value as RawClaudeAliasFile).aliases;
+  const aliasesValue = value.aliases;
   if (!Array.isArray(aliasesValue)) {
     return {
       aliases: [],
@@ -103,7 +93,7 @@ export function parseClaudeAliasConfig(
   const errors: string[] = [];
 
   for (const [index, entry] of aliasesValue.entries()) {
-    const parsed = parseClaudeAliasEntry(entry, `${source} aliases[${index}]`);
+    const parsed = parseClaudeAliasEntry(entry);
     if (parsed) {
       aliases.push(parsed);
     } else {
@@ -125,24 +115,18 @@ function parseAliasFile(path: string): ParsedAliasFile {
 
 function parseClaudeAliasEntry(
   value: unknown,
-  _source: string,
 ): ClaudeAliasDefinition | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
 
-  const entry = value as RawClaudeAliasEntry;
-  const slug = normalizeSlug(entry.slug);
+  const slug = normalizeSlug(value.slug);
   if (!slug) {
     return undefined;
   }
 
-  const label = normalizeLabel(entry.label) ?? titleCaseSlug(slug);
-  const handle = normalizeHandle(entry.handle) ?? `claude-${slug}`;
-
-  if (!handle) {
-    return undefined;
-  }
+  const label = normalizeLabel(value.label) ?? titleCaseSlug(slug);
+  const handle = normalizeHandle(value.handle) ?? `claude-${slug}`;
 
   return {
     slug,

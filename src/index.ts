@@ -2,12 +2,7 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import {
-  getModels,
-  type Model,
-  type OAuthCredentials,
-  type OAuthLoginCallbacks,
-} from "@earendil-works/pi-ai/compat";
+import { getModels, type Model } from "@earendil-works/pi-ai/compat";
 import { anthropicOAuthProvider } from "@earendil-works/pi-ai/oauth";
 import {
   loadClaudeAliases,
@@ -22,6 +17,14 @@ const BUILTIN_BASE_URL = "https://api.anthropic.com";
 const FOOTER_STATUS_KEY = "claude-alias";
 
 type AnthropicModel = Model<typeof BUILTIN_API>;
+export interface ClaudeAliasExtensionAPI {
+  registerProvider(
+    name: string,
+    config: Parameters<ExtensionAPI["registerProvider"]>[1],
+  ): void;
+  unregisterProvider(name: string): void;
+  on(event: string, handler: (event: unknown, ctx: unknown) => unknown): void;
+}
 type ModelRegistryLike = {
   find(provider: string, modelId: string): unknown;
 };
@@ -55,7 +58,7 @@ export default function claudeAliases(pi: ExtensionAPI): void {
 }
 
 export function registerClaudeAliases(
-  pi: ExtensionAPI,
+  pi: ClaudeAliasExtensionAPI,
   deps: AnthropicAliasDeps = DEFAULT_DEPS,
 ): void {
   let activeAliases: ClaudeAliasDefinition[] = [];
@@ -63,7 +66,7 @@ export function registerClaudeAliases(
   let lastRegistrationSignature: string | undefined;
   let lastErrorSignature: string | undefined;
 
-  function refreshAliasProviders(ctx?: RefreshContext): boolean {
+  function refreshAliasProviders(ctx?: RefreshContext): void {
     const loaded = deps.loadAliases({
       ...(ctx?.cwd ? { cwd: ctx.cwd } : {}),
       ...(ctx ? { projectTrusted: ctx.isProjectTrusted() } : {}),
@@ -93,19 +96,20 @@ export function registerClaudeAliases(
     }
 
     syncAliasStatus(ctx, activeAliases);
-    return changed;
   }
 
   refreshAliasProviders();
 
-  const refresh = (_event: unknown, ctx: RefreshContext) => {
+  const refresh = (_event: unknown, ctx: unknown) => {
+    if (!isRefreshContext(ctx)) return;
     refreshAliasProviders(ctx);
   };
 
   pi.on("session_start", refresh);
   pi.on("model_select", refresh);
   pi.on("before_agent_start", refresh);
-  pi.on("session_shutdown", (_event, ctx: RefreshContext) => {
+  pi.on("session_shutdown", (_event, ctx: unknown) => {
+    if (!isRefreshContext(ctx)) return;
     if (ctx.hasUI) {
       ctx.ui.setStatus(FOOTER_STATUS_KEY, undefined);
     }
@@ -128,7 +132,7 @@ export function resolveBuiltinAnthropicModels(
 }
 
 export function registerAnthropicAlias(
-  pi: ExtensionAPI,
+  pi: ClaudeAliasExtensionAPI,
   alias: ClaudeAliasDefinition,
   oauthProvider: AnthropicOAuthProvider,
   sourceModels: readonly AnthropicModel[],
@@ -138,16 +142,8 @@ export function registerAnthropicAlias(
     api: BUILTIN_API,
     models: sourceModels.map((model) => cloneAliasModel(model, alias.label)),
     oauth: {
+      ...oauthProvider,
       name: getAliasOAuthName(oauthProvider.name, alias.label),
-      login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
-        return oauthProvider.login(callbacks);
-      },
-      refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
-        return oauthProvider.refreshToken(credentials);
-      },
-      getApiKey(credentials: OAuthCredentials): string {
-        return oauthProvider.getApiKey(credentials);
-      },
     },
   });
 }
@@ -192,7 +188,7 @@ export function formatFooterModelLabel(modelId: string): string {
 }
 
 function syncRegisteredProviders(
-  pi: ExtensionAPI,
+  pi: ClaudeAliasExtensionAPI,
   aliases: readonly ClaudeAliasDefinition[],
   oauthProvider: AnthropicOAuthProvider,
   sourceModels: readonly AnthropicModel[],
@@ -240,6 +236,22 @@ function isAnthropicModel(model: unknown): model is AnthropicModel {
   return hasApi(model) && model.api === BUILTIN_API;
 }
 
+function isRefreshContext(value: unknown): value is RefreshContext {
+  return (
+    isRecord(value) &&
+    typeof value.cwd === "string" &&
+    typeof value.hasUI === "boolean" &&
+    typeof value.isProjectTrusted === "function" &&
+    isRecord(value.ui) &&
+    typeof value.ui.setStatus === "function" &&
+    typeof value.ui.notify === "function"
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function hasApi(value: unknown): value is { api: unknown } {
   return typeof value === "object" && value !== null && "api" in value;
 }
@@ -271,21 +283,8 @@ function getRegistrationSignature(
   });
 }
 
-function cloneAliasModel(model: AnthropicModel, label: string) {
-  return {
-    id: model.id,
-    name: `${model.name ?? model.id} (${label})`,
-    api: model.api,
-    reasoning: model.reasoning,
-    input: [...model.input],
-    cost: { ...model.cost },
-    contextWindow: model.contextWindow,
-    maxTokens: model.maxTokens,
-    ...(model.baseUrl !== undefined ? { baseUrl: model.baseUrl } : {}),
-    ...(model.thinkingLevelMap
-      ? { thinkingLevelMap: { ...model.thinkingLevelMap } }
-      : {}),
-    ...(model.headers ? { headers: { ...model.headers } } : {}),
-    ...(model.compat ? { compat: structuredClone(model.compat) } : {}),
-  };
+function cloneAliasModel(model: AnthropicModel, label: string): AnthropicModel {
+  const cloned = structuredClone(model);
+  cloned.name = `${model.name} (${label})`;
+  return cloned;
 }

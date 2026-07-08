@@ -1,7 +1,9 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ClaudeAliasExtensionAPI } from "../../src/index.js";
 
-type CapturedProviderConfig = Parameters<ExtensionAPI["registerProvider"]>[1];
-type Handler = (event: unknown, ctx: FakeContext) => unknown;
+type CapturedProviderConfig = Parameters<
+  ClaudeAliasExtensionAPI["registerProvider"]
+>[1];
+type Handler = (event: unknown, ctx: unknown) => unknown;
 
 export interface FakeModelRegistry {
   find(provider: string, modelId: string): ModelLike | undefined;
@@ -21,7 +23,7 @@ export interface FakeContext {
   ui: FakeUi;
 }
 
-export class FakePi {
+export class FakePi implements ClaudeAliasExtensionAPI {
   readonly providers = new Map<string, CapturedProviderConfig>();
   readonly unregisteredProviderIds: string[] = [];
   readonly handlers = new Map<string, Handler[]>();
@@ -55,10 +57,6 @@ export class FakePi {
       ui: new FakeUi(),
       ...overrides,
     };
-  }
-
-  asExtensionApi(): ExtensionAPI {
-    return this as unknown as ExtensionAPI;
   }
 }
 

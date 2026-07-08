@@ -32,12 +32,7 @@ test("npm pack only includes runtime package assets", async (t) => {
     { maxBuffer: 1024 * 1024 },
   );
   const result = parsePackResult(stdout);
-  const manifest = JSON.parse(await readFile("package.json", "utf8")) as {
-    name: string;
-    version: string;
-    pi?: { extensions?: string[]; image?: string };
-    publishConfig?: { access?: string };
-  };
+  const manifest = parsePackageManifest(await readFile("package.json", "utf8"));
   const files = new Set(result.files.map((file) => file.path));
 
   assert.equal(result.name, manifest.name);
@@ -51,7 +46,7 @@ test("npm pack only includes runtime package assets", async (t) => {
   );
   assert.ok(files.has("package.json"));
   assert.ok(files.has("README.md"));
-  assert.equal(result.size < 50_000, true);
+  assert.ok(result.size < 50_000);
   assert.equal(files.has("CHANGELOG.md"), false);
   assert.ok(files.has("LICENSE"));
   assert.ok(files.has("src/index.ts"));
@@ -67,10 +62,23 @@ test("npm pack only includes runtime package assets", async (t) => {
     false,
   );
 
-  assert.deepEqual(manifest.pi?.extensions, ["./src/index.ts"]);
-  assert.match(manifest.pi?.image ?? "", /^https:\/\//);
+  assert.deepEqual(manifest.pi.extensions, ["./src/index.ts"]);
+  assert.match(manifest.pi.image ?? "", /^https:\/\//);
   assert.equal(manifest.publishConfig?.access, "public");
 });
+
+interface PackageManifest {
+  name: string;
+  version: string;
+  pi: { extensions?: string[]; image?: string };
+  publishConfig?: { access?: string };
+}
+
+function parsePackageManifest(raw: string): PackageManifest {
+  const value: unknown = JSON.parse(raw);
+  assert.ok(isPackageManifest(value));
+  return value;
+}
 
 function parsePackResult(stdout: string): PackResult {
   const value: unknown = JSON.parse(stdout);
@@ -91,6 +99,23 @@ function isPackResult(value: unknown): value is PackResult {
     typeof value.size === "number" &&
     Array.isArray(value.files) &&
     value.files.every((file) => isRecord(file) && typeof file.path === "string")
+  );
+}
+
+function isPackageManifest(value: unknown): value is PackageManifest {
+  return (
+    isRecord(value) &&
+    typeof value.name === "string" &&
+    typeof value.version === "string" &&
+    isRecord(value.pi) &&
+    (value.pi.extensions === undefined ||
+      (Array.isArray(value.pi.extensions) &&
+        value.pi.extensions.every((item) => typeof item === "string"))) &&
+    (value.pi.image === undefined || typeof value.pi.image === "string") &&
+    (value.publishConfig === undefined ||
+      (isRecord(value.publishConfig) &&
+        (value.publishConfig.access === undefined ||
+          typeof value.publishConfig.access === "string")))
   );
 }
 

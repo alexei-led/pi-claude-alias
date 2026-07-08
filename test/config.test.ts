@@ -125,6 +125,32 @@ test("loadClaudeAliases reports invalid files and duplicate handles", (t) => {
   ]);
 });
 
+test("loadClaudeAliases keeps valid project aliases when global config is broken", (t) => {
+  const root = makeTempDir(t);
+  const cwd = join(root, "project");
+  const agentDir = join(root, "agent");
+
+  mkdirSync(dirname(getGlobalClaudeAliasConfigPath(agentDir)), {
+    recursive: true,
+  });
+  writeFileSync(getGlobalClaudeAliasConfigPath(agentDir), "{", "utf8");
+  writeJson(getProjectClaudeAliasConfigPath(cwd), {
+    aliases: [{ slug: "work", handle: "claude-work", label: "Work" }],
+  });
+
+  const loaded = loadClaudeAliases({ cwd, projectTrusted: true, agentDir });
+
+  assert.match(loaded.errors.join("\n"), /Invalid JSON/);
+  assert.deepEqual(loaded.aliases, [
+    {
+      slug: "work",
+      providerId: "anthropic-work",
+      handle: "claude-work",
+      label: "Work",
+    },
+  ]);
+});
+
 test("parseClaudeAliasConfig reports malformed input", () => {
   const malformed = parseClaudeAliasConfig("{", "broken.json");
   assert.match(malformed.errors.join("\n"), /Invalid JSON/);
