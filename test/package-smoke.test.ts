@@ -16,6 +16,7 @@ interface PackResult {
   filename: string;
   name: string;
   version: string;
+  size: number;
   files: PackFile[];
 }
 
@@ -34,7 +35,7 @@ test("npm pack only includes runtime package assets", async (t) => {
   const manifest = JSON.parse(await readFile("package.json", "utf8")) as {
     name: string;
     version: string;
-    pi?: { extensions?: string[] };
+    pi?: { extensions?: string[]; image?: string };
     publishConfig?: { access?: string };
   };
   const files = new Set(result.files.map((file) => file.path));
@@ -50,9 +51,11 @@ test("npm pack only includes runtime package assets", async (t) => {
   );
   assert.ok(files.has("package.json"));
   assert.ok(files.has("README.md"));
-  assert.ok(files.has("CHANGELOG.md"));
+  assert.equal(result.size < 50_000, true);
+  assert.equal(files.has("CHANGELOG.md"), false);
   assert.ok(files.has("LICENSE"));
   assert.ok(files.has("src/index.ts"));
+  assert.equal(files.has("assets/alias.png"), false);
   assert.equal(files.has("RELEASE.md"), false);
   assert.equal(files.has("tsconfig.json"), false);
   assert.equal(
@@ -65,6 +68,7 @@ test("npm pack only includes runtime package assets", async (t) => {
   );
 
   assert.deepEqual(manifest.pi?.extensions, ["./src/index.ts"]);
+  assert.match(manifest.pi?.image ?? "", /^https:\/\//);
   assert.equal(manifest.publishConfig?.access, "public");
 });
 
@@ -84,6 +88,7 @@ function isPackResult(value: unknown): value is PackResult {
     typeof value.filename === "string" &&
     typeof value.name === "string" &&
     typeof value.version === "string" &&
+    typeof value.size === "number" &&
     Array.isArray(value.files) &&
     value.files.every((file) => isRecord(file) && typeof file.path === "string")
   );

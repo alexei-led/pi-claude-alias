@@ -6,11 +6,7 @@
   "main": "./src/index.ts",
   "exports": "./src/index.ts",
   "files": [
-    "src",
-    "assets",
-    "README.md",
-    "CHANGELOG.md",
-    "LICENSE"
+    "src"
   ],
   "keywords": [
     "pi-package",
@@ -60,6 +56,6 @@
     "extensions": [
       "./src/index.ts"
     ],
-    "image": "./assets/alias.png"
+    "image": "https://raw.githubusercontent.com/alexei-led/pi-claude-alias/main/assets/alias.png"
   }
 }
