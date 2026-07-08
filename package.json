@@ -1,0 +1,65 @@
+{
+  "name": "pi-claude-alias",
+  "version": "0.1.0",
+  "description": "Pi extension that adds personal and work aliases for the built-in Anthropic OAuth provider.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": "./src/index.ts",
+  "files": [
+    "src",
+    "assets",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi-coding-agent",
+    "anthropic",
+    "claude",
+    "oauth",
+    "alias"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alexei-led/pi-claude-alias.git"
+  },
+  "homepage": "https://github.com/alexei-led/pi-claude-alias#readme",
+  "bugs": {
+    "url": "https://github.com/alexei-led/pi-claude-alias/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "lint": "eslint . --cache --cache-strategy content",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import jiti/register --test test/*.test.ts",
+    "pack:dry": "npm pack --dry-run",
+    "publish:dry": "npm publish --dry-run",
+    "verify": "npm run lint && npm run typecheck && npm test && npm run pack:dry"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.10.0",
+    "eslint": "^10.6.0",
+    "globals": "^17.7.0",
+    "jiti": "^2.7.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.62.1"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "image": "./assets/alias.png"
+  }
+}

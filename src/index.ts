@@ -1,0 +1,291 @@
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
+import {
+  getModels,
+  type Model,
+  type OAuthCredentials,
+  type OAuthLoginCallbacks,
+} from "@earendil-works/pi-ai/compat";
+import { anthropicOAuthProvider } from "@earendil-works/pi-ai/oauth";
+import {
+  loadClaudeAliases,
+  type ClaudeAliasDefinition,
+  type ClaudeAliasLoadOptions,
+  type ClaudeAliasLoadResult,
+} from "./config.js";
+
+const BUILTIN_PROVIDER = "anthropic";
+const BUILTIN_API = "anthropic-messages";
+const BUILTIN_BASE_URL = "https://api.anthropic.com";
+const FOOTER_STATUS_KEY = "claude-alias";
+
+type AnthropicModel = Model<typeof BUILTIN_API>;
+type ModelRegistryLike = {
+  find(provider: string, modelId: string): unknown;
+};
+type RefreshContext = Pick<
+  ExtensionContext,
+  "cwd" | "hasUI" | "isProjectTrusted" | "model" | "modelRegistry" | "ui"
+>;
+
+type AnthropicOAuthProvider = Pick<
+  typeof anthropicOAuthProvider,
+  "name" | "login" | "refreshToken" | "getApiKey"
+>;
+
+export type AnthropicAliasDeps = {
+  getModels(provider: string): readonly unknown[];
+  oauthProvider: AnthropicOAuthProvider;
+  loadAliases(options: ClaudeAliasLoadOptions): ClaudeAliasLoadResult;
+};
+
+const defaultGetModels: AnthropicAliasDeps["getModels"] = (provider) =>
+  provider === BUILTIN_PROVIDER ? getModels(BUILTIN_PROVIDER) : [];
+
+const DEFAULT_DEPS: AnthropicAliasDeps = {
+  getModels: defaultGetModels,
+  oauthProvider: anthropicOAuthProvider,
+  loadAliases: loadClaudeAliases,
+};
+
+export default function claudeAliases(pi: ExtensionAPI): void {
+  registerClaudeAliases(pi, DEFAULT_DEPS);
+}
+
+export function registerClaudeAliases(
+  pi: ExtensionAPI,
+  deps: AnthropicAliasDeps = DEFAULT_DEPS,
+): void {
+  let activeAliases: ClaudeAliasDefinition[] = [];
+  let registeredProviderIds = new Set<string>();
+  let lastRegistrationSignature: string | undefined;
+  let lastErrorSignature: string | undefined;
+
+  function refreshAliasProviders(ctx?: RefreshContext): boolean {
+    const loaded = deps.loadAliases({
+      ...(ctx?.cwd ? { cwd: ctx.cwd } : {}),
+      ...(ctx ? { projectTrusted: ctx.isProjectTrusted() } : {}),
+    });
+    reportConfigErrors(loaded.errors, ctx, lastErrorSignature);
+    lastErrorSignature = loaded.errors.join("\n");
+
+    const aliases = loaded.aliases;
+    const sourceModels = resolveBuiltinAnthropicModels(
+      deps,
+      ctx?.modelRegistry,
+    );
+    const signature = getRegistrationSignature(aliases, sourceModels);
+    const changed = signature !== lastRegistrationSignature;
+
+    if (changed) {
+      syncRegisteredProviders(
+        pi,
+        aliases,
+        deps.oauthProvider,
+        sourceModels,
+        registeredProviderIds,
+      );
+      registeredProviderIds = new Set(aliases.map((alias) => alias.providerId));
+      activeAliases = aliases;
+      lastRegistrationSignature = signature;
+    }
+
+    syncAliasStatus(ctx, activeAliases);
+    return changed;
+  }
+
+  refreshAliasProviders();
+
+  const refresh = (_event: unknown, ctx: RefreshContext) => {
+    refreshAliasProviders(ctx);
+  };
+
+  pi.on("session_start", refresh);
+  pi.on("model_select", refresh);
+  pi.on("before_agent_start", refresh);
+  pi.on("session_shutdown", (_event, ctx: RefreshContext) => {
+    if (ctx.hasUI) {
+      ctx.ui.setStatus(FOOTER_STATUS_KEY, undefined);
+    }
+  });
+}
+
+export function resolveBuiltinAnthropicModels(
+  deps: AnthropicAliasDeps,
+  modelRegistry?: ModelRegistryLike,
+): AnthropicModel[] {
+  const builtinModels = deps
+    .getModels(BUILTIN_PROVIDER)
+    .filter(isAnthropicModel);
+  if (!modelRegistry) return [...builtinModels];
+
+  return builtinModels.map((model) => {
+    const override = modelRegistry.find(BUILTIN_PROVIDER, model.id);
+    return isAnthropicModel(override) ? override : model;
+  });
+}
+
+export function registerAnthropicAlias(
+  pi: ExtensionAPI,
+  alias: ClaudeAliasDefinition,
+  oauthProvider: AnthropicOAuthProvider,
+  sourceModels: readonly AnthropicModel[],
+): void {
+  pi.registerProvider(alias.providerId, {
+    baseUrl: sourceModels[0]?.baseUrl ?? BUILTIN_BASE_URL,
+    api: BUILTIN_API,
+    models: sourceModels.map((model) => cloneAliasModel(model, alias.label)),
+    oauth: {
+      name: getAliasOAuthName(oauthProvider.name, alias.label),
+      login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
+        return oauthProvider.login(callbacks);
+      },
+      refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
+        return oauthProvider.refreshToken(credentials);
+      },
+      getApiKey(credentials: OAuthCredentials): string {
+        return oauthProvider.getApiKey(credentials);
+      },
+    },
+  });
+}
+
+export function getAliasOAuthName(baseName: string, label: string): string {
+  return `${baseName} - ${label}`;
+}
+
+export function getFooterStatusText(
+  model: { provider: string; id: string } | undefined,
+  aliases: readonly ClaudeAliasDefinition[],
+): string | undefined {
+  if (!model) return undefined;
+
+  const alias = aliases.find((item) => item.providerId === model.provider);
+  if (!alias) return undefined;
+
+  return `${alias.handle} · ${formatFooterModelLabel(model.id)}`;
+}
+
+export function formatFooterModelLabel(modelId: string): string {
+  const trimmed = modelId.startsWith("claude-") ? modelId.slice(7) : modelId;
+  const short = trimmed.match(/^(opus|sonnet|haiku|fable)-(\d+)-(\d+)$/i);
+  if (short) {
+    const [, family, major, minor] = short;
+    if (family && major && minor) {
+      return `${family.toLowerCase()}-${major}.${minor}`;
+    }
+  }
+
+  const dated = trimmed.match(
+    /^(opus|sonnet|haiku|fable)-(\d+)-(\d+)-(\d{8})$/i,
+  );
+  if (dated) {
+    const [, family, major, minor, stamp] = dated;
+    if (family && major && minor && stamp) {
+      return `${family.toLowerCase()}-${major}.${minor}@${stamp}`;
+    }
+  }
+
+  return trimmed;
+}
+
+function syncRegisteredProviders(
+  pi: ExtensionAPI,
+  aliases: readonly ClaudeAliasDefinition[],
+  oauthProvider: AnthropicOAuthProvider,
+  sourceModels: readonly AnthropicModel[],
+  registeredProviderIds: ReadonlySet<string>,
+): void {
+  const nextProviderIds = new Set(aliases.map((alias) => alias.providerId));
+
+  for (const providerId of registeredProviderIds) {
+    if (!nextProviderIds.has(providerId)) {
+      pi.unregisterProvider(providerId);
+    }
+  }
+
+  for (const alias of aliases) {
+    registerAnthropicAlias(pi, alias, oauthProvider, sourceModels);
+  }
+}
+
+function syncAliasStatus(
+  ctx: RefreshContext | undefined,
+  aliases: readonly ClaudeAliasDefinition[],
+): void {
+  if (!ctx?.hasUI) return;
+  ctx.ui.setStatus(FOOTER_STATUS_KEY, getFooterStatusText(ctx.model, aliases));
+}
+
+function reportConfigErrors(
+  errors: readonly string[],
+  ctx: RefreshContext | undefined,
+  lastErrorSignature: string | undefined,
+): void {
+  const signature = errors.join("\n");
+  if (!signature || signature === lastErrorSignature) return;
+
+  const message = `claude-alias config: ${errors[0]}`;
+  if (ctx?.hasUI) {
+    ctx.ui.notify(message, "error");
+    return;
+  }
+
+  console.warn(message);
+}
+
+function isAnthropicModel(model: unknown): model is AnthropicModel {
+  return hasApi(model) && model.api === BUILTIN_API;
+}
+
+function hasApi(value: unknown): value is { api: unknown } {
+  return typeof value === "object" && value !== null && "api" in value;
+}
+
+function getRegistrationSignature(
+  aliases: readonly ClaudeAliasDefinition[],
+  models: readonly AnthropicModel[],
+): string {
+  return JSON.stringify({
+    aliases: aliases.map((alias) => ({
+      providerId: alias.providerId,
+      handle: alias.handle,
+      label: alias.label,
+    })),
+    models: models.map((model) => ({
+      id: model.id,
+      name: model.name,
+      api: model.api,
+      baseUrl: model.baseUrl,
+      reasoning: model.reasoning,
+      input: [...model.input],
+      cost: model.cost,
+      contextWindow: model.contextWindow,
+      maxTokens: model.maxTokens,
+      thinkingLevelMap: model.thinkingLevelMap,
+      headers: model.headers,
+      compat: model.compat,
+    })),
+  });
+}
+
+function cloneAliasModel(model: AnthropicModel, label: string) {
+  return {
+    id: model.id,
+    name: `${model.name ?? model.id} (${label})`,
+    api: model.api,
+    reasoning: model.reasoning,
+    input: [...model.input],
+    cost: { ...model.cost },
+    contextWindow: model.contextWindow,
+    maxTokens: model.maxTokens,
+    ...(model.baseUrl !== undefined ? { baseUrl: model.baseUrl } : {}),
+    ...(model.thinkingLevelMap
+      ? { thinkingLevelMap: { ...model.thinkingLevelMap } }
+      : {}),
+    ...(model.headers ? { headers: { ...model.headers } } : {}),
+    ...(model.compat ? { compat: structuredClone(model.compat) } : {}),
+  };
+}

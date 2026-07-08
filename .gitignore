@@ -1,0 +1,9 @@
+.pi/
+.pi-subagents/
+node_modules/
+coverage/
+dist/
+*.log
+*.tgz
+.eslintcache
+.DS_Store
