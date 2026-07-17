@@ -32,10 +32,12 @@ type RefreshContext = Pick<
   "cwd" | "hasUI" | "isProjectTrusted" | "model" | "modelRegistry" | "ui"
 >;
 
-type AnthropicOAuthProvider = Pick<
-  typeof anthropicOAuth,
-  "name" | "login" | "refresh" | "toAuth"
->;
+type AnthropicOAuthProvider = {
+  name: string;
+  login(...args: unknown[]): Promise<unknown>;
+  refresh(...args: unknown[]): Promise<unknown>;
+  toAuth(...args: unknown[]): Promise<unknown>;
+};
 
 export type AnthropicAliasDeps = {
   getModels(provider: string): readonly unknown[];
@@ -48,7 +50,7 @@ const defaultGetModels: AnthropicAliasDeps["getModels"] = (provider) =>
 
 const DEFAULT_DEPS: AnthropicAliasDeps = {
   getModels: defaultGetModels,
-  oauthProvider: anthropicOAuth,
+  oauthProvider: anthropicOAuth as AnthropicOAuthProvider,
   loadAliases: loadClaudeAliases,
 };
 
