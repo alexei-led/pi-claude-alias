@@ -82,8 +82,12 @@ function parsePackageManifest(raw: string): PackageManifest {
 
 function parsePackResult(stdout: string): PackResult {
   const value: unknown = JSON.parse(stdout);
-  assert.ok(Array.isArray(value));
-  const items: unknown[] = value;
+  // npm <12 emits an array; npm 12 emits an object keyed by package name.
+  const items: unknown[] = Array.isArray(value)
+    ? value
+    : isRecord(value)
+      ? Object.values(value)
+      : [];
   assert.equal(items.length, 1);
   const [result] = items;
   assert.ok(isPackResult(result));

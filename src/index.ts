@@ -2,7 +2,13 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { getModels, anthropicOAuth, type Model } from "@earendil-works/pi-ai/compat";
+import {
+  getModels,
+  anthropicOAuth,
+  type Model,
+  type OAuthCredentials,
+  type OAuthLoginCallbacks,
+} from "@earendil-works/pi-ai/compat";
 import {
   loadClaudeAliases,
   type ClaudeAliasDefinition,
@@ -34,9 +40,9 @@ type RefreshContext = Pick<
 
 type AnthropicOAuthProvider = {
   name: string;
-  login(...args: unknown[]): Promise<unknown>;
-  refresh(...args: unknown[]): Promise<unknown>;
-  toAuth(...args: unknown[]): Promise<unknown>;
+  login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials>;
+  refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials>;
+  getApiKey(credentials: OAuthCredentials): string;
 };
 
 export type AnthropicAliasDeps = {
@@ -48,19 +54,71 @@ export type AnthropicAliasDeps = {
 const defaultGetModels: AnthropicAliasDeps["getModels"] = (provider) =>
   provider === BUILTIN_PROVIDER ? getModels(BUILTIN_PROVIDER) : [];
 
-const DEFAULT_DEPS: AnthropicAliasDeps = {
+// pi's runtime (provider-composer) consumes the pre-0.80 oauth shape:
+// old-style login callbacks, refreshToken, and a synchronous getApiKey.
+// Adapt the 0.80 OAuthAuth interface (login(interaction)/refresh/toAuth).
+function wrapOAuth(oauth: typeof anthropicOAuth): AnthropicOAuthProvider {
+  return {
+    name: oauth.name,
+    login: (callbacks) =>
+      oauth.login({
+        ...(callbacks.signal ? { signal: callbacks.signal } : {}),
+        notify: (event) => {
+          switch (event.type) {
+            case "auth_url":
+              callbacks.onAuth({
+                url: event.url,
+                ...(event.instructions
+                  ? { instructions: event.instructions }
+                  : {}),
+              });
+              break;
+            case "device_code":
+              callbacks.onDeviceCode(event);
+              break;
+            default:
+              callbacks.onProgress?.(event.message);
+          }
+        },
+        prompt: (prompt) => {
+          if (prompt.type === "manual_code" && callbacks.onManualCodeInput) {
+            return callbacks.onManualCodeInput();
+          }
+          if (prompt.type === "select") {
+            return callbacks
+              .onSelect({
+                message: prompt.message,
+                options: prompt.options.map(({ id, label }) => ({ id, label })),
+              })
+              .then((choice) => choice ?? "");
+          }
+          return callbacks.onPrompt({
+            message: prompt.message,
+            ...(prompt.placeholder ? { placeholder: prompt.placeholder } : {}),
+          });
+        },
+      }),
+    refreshToken: (credentials) =>
+      oauth.refresh({ ...credentials, type: "oauth" }),
+    // toAuth() is async but pi needs a sync string; for Anthropic OAuth the
+    // access token is the api key (mirrors pi's own extension docs example).
+    getApiKey: (credentials) => credentials.access,
+  };
+}
+
+const defaultDeps = (): AnthropicAliasDeps => ({
   getModels: defaultGetModels,
-  oauthProvider: anthropicOAuth as AnthropicOAuthProvider,
+  oauthProvider: wrapOAuth(anthropicOAuth),
   loadAliases: loadClaudeAliases,
-};
+});
 
 export default function claudeAliases(pi: ExtensionAPI): void {
-  registerClaudeAliases(pi, DEFAULT_DEPS);
+  registerClaudeAliases(pi);
 }
 
 export function registerClaudeAliases(
   pi: ClaudeAliasExtensionAPI,
-  deps: AnthropicAliasDeps = DEFAULT_DEPS,
+  deps: AnthropicAliasDeps = defaultDeps(),
 ): void {
   let activeAliases: ClaudeAliasDefinition[] = [];
   let registeredProviderIds = new Set<string>();
