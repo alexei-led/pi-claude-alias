@@ -1,12 +1,13 @@
-import type { ClaudeAliasExtensionAPI } from "../../src/index.js";
+import type { SubAliasesExtensionAPI } from "../../src/index.js";
 
 type CapturedProviderConfig = Parameters<
-  ClaudeAliasExtensionAPI["registerProvider"]
+  SubAliasesExtensionAPI["registerProvider"]
 >[1];
 type Handler = (event: unknown, ctx: unknown) => unknown;
 
 export interface FakeModelRegistry {
   find(provider: string, modelId: string): ModelLike | undefined;
+  authStorage?: { get(providerId: string): unknown };
 }
 
 interface ModelLike {
@@ -23,12 +24,20 @@ export interface FakeContext {
   ui: FakeUi;
 }
 
-export class FakePi implements ClaudeAliasExtensionAPI {
+export class FakePi implements SubAliasesExtensionAPI {
   readonly providers = new Map<string, CapturedProviderConfig>();
+  readonly registerCalls: string[] = [];
   readonly unregisteredProviderIds: string[] = [];
   readonly handlers = new Map<string, Handler[]>();
+  readonly emittedEvents: Array<{ channel: string; data: unknown }> = [];
+  readonly events = {
+    emit: (channel: string, data: unknown): void => {
+      this.emittedEvents.push({ channel, data });
+    },
+  };
 
   registerProvider(providerId: string, config: CapturedProviderConfig): void {
+    this.registerCalls.push(providerId);
     this.providers.set(providerId, config);
   }
 

@@ -3,221 +3,200 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import * as piAiCompat from "@earendil-works/pi-ai/compat";
-import type {
-  Model,
-  OAuthAuth,
-  OAuthCredentials,
-  OAuthLoginCallbacks,
-} from "@earendil-works/pi-ai/compat";
 import {
-  loadClaudeAliases,
-  type ClaudeAliasDefinition,
-  type ClaudeAliasLoadOptions,
-  type ClaudeAliasLoadResult,
+  loadAliases,
+  type AliasDefinition,
+  type AliasLoadOptions,
+  type AliasLoadResult,
 } from "./config.js";
+import { wrapOAuth, type WrappedOAuthProvider } from "./oauth.js";
+import {
+  PROVIDER_NAMES,
+  PROVIDER_SPECS,
+  type AliasModel,
+  type AliasProviderConfig,
+  type EventBusLike,
+  type ProviderName,
+  type ProviderSpec,
+  type SyncEnvModelRegistry,
+} from "./providers.js";
+import { errorMessage, isRecord } from "./shared.js";
 
-const BUILTIN_PROVIDER = "anthropic";
-const BUILTIN_API = "anthropic-messages";
-const BUILTIN_BASE_URL = "https://api.anthropic.com";
-const FOOTER_STATUS_KEY = "claude-alias";
+const FOOTER_STATUS_KEY = "sub-aliases";
+const CONFIG_ERROR_PREFIX = "sub-aliases config";
 
-type AnthropicModel = Model<typeof BUILTIN_API>;
-export interface ClaudeAliasExtensionAPI {
-  registerProvider(
-    name: string,
-    config: Parameters<ExtensionAPI["registerProvider"]>[1],
-  ): void;
+export type SubAliasesExtensionAPI = {
+  registerProvider(name: string, config: AliasProviderConfig): void;
   unregisterProvider(name: string): void;
   on(event: string, handler: (event: unknown, ctx: unknown) => unknown): void;
-}
-type ModelRegistryLike = {
-  find(provider: string, modelId: string): unknown;
+  events: EventBusLike;
 };
 type RefreshContext = Pick<
   ExtensionContext,
   "cwd" | "hasUI" | "isProjectTrusted" | "model" | "modelRegistry" | "ui"
 >;
 
-type AnthropicOAuthProvider = {
-  name: string;
-  login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials>;
-  refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials>;
-  getApiKey(credentials: OAuthCredentials): string;
+export type SubAliasesDeps = {
+  getModels(provider: ProviderName): readonly unknown[];
+  getOAuthProvider(provider: ProviderName): WrappedOAuthProvider;
+  loadAliases(options: AliasLoadOptions): AliasLoadResult;
 };
 
-export type AnthropicAliasDeps = {
-  getModels(provider: string): readonly unknown[];
-  oauthProvider: AnthropicOAuthProvider;
-  loadAliases(options: ClaudeAliasLoadOptions): ClaudeAliasLoadResult;
-};
+const defaultDeps = (): SubAliasesDeps => ({
+  getModels: (provider) => piAiCompat.getModels(provider),
+  // Resolved lazily per provider at alias registration time; the OAuth
+  // exports only exist on a pi-repatch'd install.
+  getOAuthProvider: (provider) =>
+    wrapOAuth(PROVIDER_SPECS[provider].oauthExport),
+  loadAliases,
+});
 
-const defaultGetModels: AnthropicAliasDeps["getModels"] = (provider) =>
-  provider === BUILTIN_PROVIDER ? piAiCompat.getModels(BUILTIN_PROVIDER) : [];
-
-// pi's runtime (provider-composer) consumes the pre-0.80 oauth shape:
-// old-style login callbacks, refreshToken, and a synchronous getApiKey.
-// Adapt the 0.80 OAuthAuth interface (login(interaction)/refresh/toAuth).
-function wrapOAuth(oauth: OAuthAuth): AnthropicOAuthProvider {
-  return {
-    name: oauth.name,
-    login: (callbacks) =>
-      oauth.login({
-        ...(callbacks.signal ? { signal: callbacks.signal } : {}),
-        notify: (event) => {
-          switch (event.type) {
-            case "auth_url":
-              callbacks.onAuth({
-                url: event.url,
-                ...(event.instructions
-                  ? { instructions: event.instructions }
-                  : {}),
-              });
-              break;
-            case "device_code":
-              callbacks.onDeviceCode(event);
-              break;
-            default:
-              callbacks.onProgress?.(event.message);
-          }
-        },
-        prompt: (prompt) => {
-          if (prompt.type === "manual_code" && callbacks.onManualCodeInput) {
-            return callbacks.onManualCodeInput();
-          }
-          if (prompt.type === "select") {
-            return callbacks
-              .onSelect({
-                message: prompt.message,
-                options: prompt.options.map(({ id, label }) => ({ id, label })),
-              })
-              .then((choice) => choice ?? "");
-          }
-          return callbacks.onPrompt({
-            message: prompt.message,
-            ...(prompt.placeholder ? { placeholder: prompt.placeholder } : {}),
-          });
-        },
-      }),
-    refreshToken: (credentials) =>
-      oauth.refresh({ ...credentials, type: "oauth" }),
-    // toAuth() is async but pi needs a sync string; for Anthropic OAuth the
-    // access token is the api key (mirrors pi's own extension docs example).
-    getApiKey: (credentials) => credentials.access,
-  };
+export default function subAliases(pi: ExtensionAPI): void {
+  registerSubAliases(pi);
 }
 
-// Stock pi-ai 0.80 compat does not re-export the OAuth providers; the
-// pi-repatch'd install does. Resolve lazily via the namespace so the module
-// still loads (and tests run) against stock pi-ai.
-const defaultDeps = (): AnthropicAliasDeps => {
-  const { anthropicOAuth } = piAiCompat as Partial<{
-    anthropicOAuth: OAuthAuth;
-  }>;
-  if (!anthropicOAuth) {
-    throw new Error(
-      "@earendil-works/pi-ai/compat does not export anthropicOAuth; run pi-repatch",
-    );
-  }
-  return {
-    getModels: defaultGetModels,
-    oauthProvider: wrapOAuth(anthropicOAuth),
-    loadAliases: loadClaudeAliases,
-  };
-};
-
-export default function claudeAliases(pi: ExtensionAPI): void {
-  registerClaudeAliases(pi);
-}
-
-export function registerClaudeAliases(
-  pi: ClaudeAliasExtensionAPI,
-  deps: AnthropicAliasDeps = defaultDeps(),
+export function registerSubAliases(
+  pi: SubAliasesExtensionAPI,
+  deps: SubAliasesDeps = defaultDeps(),
 ): void {
-  let activeAliases: ClaudeAliasDefinition[] = [];
+  let activeAliases: AliasDefinition[] = [];
   let registeredProviderIds = new Set<string>();
   let lastRegistrationSignature: string | undefined;
-  let lastErrorSignature: string | undefined;
+  let registrationErrors: string[] = [];
+  // Separate signatures per channel: an error warned to the console during the
+  // headless activation refresh must still reach the UI on the first session.
+  let notifiedErrorSignature = "";
+  let warnedErrorSignature = "";
+  let warnedInvalidContext = false;
 
-  function refreshAliasProviders(ctx?: RefreshContext): void {
+  function refreshAliasProviders(
+    ctx?: RefreshContext,
+    allowSubBarRefresh = false,
+  ): void {
     const loaded = deps.loadAliases({
       ...(ctx?.cwd ? { cwd: ctx.cwd } : {}),
       ...(ctx ? { projectTrusted: ctx.isProjectTrusted() } : {}),
     });
-    reportConfigErrors(loaded.errors, ctx, lastErrorSignature);
-    lastErrorSignature = loaded.errors.join("\n");
 
     const aliases = loaded.aliases;
-    const sourceModels = resolveBuiltinAnthropicModels(
-      deps,
-      ctx?.modelRegistry,
-    );
+    const sourceModels = resolveSourceModels(aliases, deps, ctx?.modelRegistry);
     const signature = getRegistrationSignature(aliases, sourceModels);
-    const changed = signature !== lastRegistrationSignature;
 
-    if (changed) {
-      syncRegisteredProviders(
+    if (signature !== lastRegistrationSignature) {
+      const synced = syncRegisteredProviders(
         pi,
         aliases,
-        deps.oauthProvider,
+        deps,
         sourceModels,
         registeredProviderIds,
       );
-      registeredProviderIds = new Set(aliases.map((alias) => alias.providerId));
-      activeAliases = aliases;
+      registeredProviderIds = synced.providerIds;
+      registrationErrors = synced.errors;
+      activeAliases = aliases.filter((alias) =>
+        synced.providerIds.has(alias.providerId),
+      );
       lastRegistrationSignature = signature;
     }
 
+    reportConfigErrors([...loaded.errors, ...registrationErrors], ctx);
     syncAliasStatus(ctx, activeAliases);
+    if (ctx) {
+      syncProviderEnv(pi, ctx, activeAliases, allowSubBarRefresh);
+    }
+  }
+
+  function reportConfigErrors(
+    errors: readonly string[],
+    ctx: RefreshContext | undefined,
+  ): void {
+    const signature = errors.join("\n");
+    const suffix = errors.length > 1 ? ` (+${errors.length - 1} more)` : "";
+    const message = `${CONFIG_ERROR_PREFIX}: ${errors[0] ?? ""}${suffix}`;
+
+    if (ctx?.hasUI) {
+      const changed = signature !== notifiedErrorSignature;
+      notifiedErrorSignature = signature;
+      if (signature && changed) ctx.ui.notify(message, "error");
+      return;
+    }
+
+    const changed = signature !== warnedErrorSignature;
+    warnedErrorSignature = signature;
+    if (signature && changed) console.warn(message);
+  }
+
+  function toRefreshContext(ctx: unknown): RefreshContext | undefined {
+    if (isRefreshContext(ctx)) return ctx;
+    if (!warnedInvalidContext) {
+      warnedInvalidContext = true;
+      console.warn(
+        "sub-aliases: unexpected event context shape; ignoring event",
+      );
+    }
+    return undefined;
   }
 
   refreshAliasProviders();
 
-  const refresh = (_event: unknown, ctx: unknown) => {
-    if (!isRefreshContext(ctx)) return;
-    refreshAliasProviders(ctx);
-  };
+  const refresh =
+    (allowSubBarRefresh: boolean) => (_event: unknown, ctx: unknown) => {
+      const refreshCtx = toRefreshContext(ctx);
+      if (!refreshCtx) return;
+      refreshAliasProviders(refreshCtx, allowSubBarRefresh);
+    };
 
-  pi.on("session_start", refresh);
-  pi.on("model_select", refresh);
-  pi.on("before_agent_start", refresh);
+  pi.on("session_start", refresh(true));
+  pi.on("model_select", refresh(true));
+  // Sync-only: mid-run events should re-assert env without sub-bar churn.
+  pi.on("before_agent_start", refresh(false));
+  pi.on("turn_start", refresh(false));
   pi.on("session_shutdown", (_event, ctx: unknown) => {
-    if (!isRefreshContext(ctx)) return;
-    if (ctx.hasUI) {
-      ctx.ui.setStatus(FOOTER_STATUS_KEY, undefined);
+    const shutdownCtx = toRefreshContext(ctx);
+    if (shutdownCtx?.hasUI) {
+      shutdownCtx.ui.setStatus(FOOTER_STATUS_KEY, undefined);
+    }
+    for (const provider of PROVIDER_NAMES) {
+      PROVIDER_SPECS[provider].restoreEnv?.();
     }
   });
 }
 
-export function resolveBuiltinAnthropicModels(
-  deps: AnthropicAliasDeps,
-  modelRegistry?: ModelRegistryLike,
-): AnthropicModel[] {
+export function resolveBuiltinModels(
+  spec: ProviderSpec,
+  deps: Pick<SubAliasesDeps, "getModels">,
+  modelRegistry?: SyncEnvModelRegistry,
+): AliasModel[] {
   const builtinModels = deps
-    .getModels(BUILTIN_PROVIDER)
-    .filter(isAnthropicModel);
-  if (!modelRegistry) return [...builtinModels];
+    .getModels(spec.builtin)
+    .filter((model): model is AliasModel => isModelForApi(model, spec.api));
+  if (!modelRegistry) return builtinModels;
 
   return builtinModels.map((model) => {
-    const override = modelRegistry.find(BUILTIN_PROVIDER, model.id);
-    return isAnthropicModel(override) ? override : model;
+    const override = modelRegistry.find(spec.builtin, model.id);
+    return isModelForApi(override, spec.api) ? override : model;
   });
 }
 
-export function registerAnthropicAlias(
-  pi: ClaudeAliasExtensionAPI,
-  alias: ClaudeAliasDefinition,
-  oauthProvider: AnthropicOAuthProvider,
-  sourceModels: readonly AnthropicModel[],
+export function registerAlias(
+  pi: SubAliasesExtensionAPI,
+  alias: AliasDefinition,
+  spec: ProviderSpec,
+  oauthProvider: WrappedOAuthProvider,
+  sourceModels: readonly AliasModel[],
 ): void {
-  pi.registerProvider(alias.providerId, {
-    baseUrl: sourceModels[0]?.baseUrl ?? BUILTIN_BASE_URL,
-    api: BUILTIN_API,
+  const config: AliasProviderConfig = {
+    baseUrl: sourceModels[0]?.baseUrl ?? spec.fallbackBaseUrl,
+    api: spec.api,
     models: sourceModels.map((model) => cloneAliasModel(model, alias.label)),
     oauth: {
       ...oauthProvider,
       name: getAliasOAuthName(oauthProvider.name, alias.label),
     },
-  });
+  };
+  pi.registerProvider(
+    alias.providerId,
+    spec.wrapStream ? spec.wrapStream(config, alias) : config,
+  );
 }
 
 export function getAliasOAuthName(baseName: string, label: string): string {
@@ -226,46 +205,42 @@ export function getAliasOAuthName(baseName: string, label: string): string {
 
 export function getFooterStatusText(
   model: { provider: string; id: string } | undefined,
-  aliases: readonly ClaudeAliasDefinition[],
+  aliases: readonly AliasDefinition[],
 ): string | undefined {
   if (!model) return undefined;
 
   const alias = aliases.find((item) => item.providerId === model.provider);
   if (!alias) return undefined;
 
-  return `${alias.handle} · ${formatFooterModelLabel(model.id)}`;
+  const label = PROVIDER_SPECS[alias.provider].footerLabel(model.id);
+  return `${alias.handle} · ${label}`;
 }
 
-export function formatFooterModelLabel(modelId: string): string {
-  const trimmed = modelId.startsWith("claude-") ? modelId.slice(7) : modelId;
-  const short = trimmed.match(/^(opus|sonnet|haiku|fable)-(\d+)-(\d+)$/i);
-  if (short) {
-    const [, family, major, minor] = short;
-    if (family && major && minor) {
-      return `${family.toLowerCase()}-${major}.${minor}`;
-    }
+function resolveSourceModels(
+  aliases: readonly AliasDefinition[],
+  deps: Pick<SubAliasesDeps, "getModels">,
+  modelRegistry?: SyncEnvModelRegistry,
+): Map<ProviderName, AliasModel[]> {
+  const byProvider = new Map<ProviderName, AliasModel[]>();
+
+  for (const alias of aliases) {
+    if (byProvider.has(alias.provider)) continue;
+    byProvider.set(
+      alias.provider,
+      resolveBuiltinModels(PROVIDER_SPECS[alias.provider], deps, modelRegistry),
+    );
   }
 
-  const dated = trimmed.match(
-    /^(opus|sonnet|haiku|fable)-(\d+)-(\d+)-(\d{8})$/i,
-  );
-  if (dated) {
-    const [, family, major, minor, stamp] = dated;
-    if (family && major && minor && stamp) {
-      return `${family.toLowerCase()}-${major}.${minor}@${stamp}`;
-    }
-  }
-
-  return trimmed;
+  return byProvider;
 }
 
 function syncRegisteredProviders(
-  pi: ClaudeAliasExtensionAPI,
-  aliases: readonly ClaudeAliasDefinition[],
-  oauthProvider: AnthropicOAuthProvider,
-  sourceModels: readonly AnthropicModel[],
+  pi: SubAliasesExtensionAPI,
+  aliases: readonly AliasDefinition[],
+  deps: Pick<SubAliasesDeps, "getOAuthProvider">,
+  sourceModels: ReadonlyMap<ProviderName, readonly AliasModel[]>,
   registeredProviderIds: ReadonlySet<string>,
-): void {
+): { providerIds: Set<string>; errors: string[] } {
   const nextProviderIds = new Set(aliases.map((alias) => alias.providerId));
 
   for (const providerId of registeredProviderIds) {
@@ -274,38 +249,65 @@ function syncRegisteredProviders(
     }
   }
 
+  const providerIds = new Set<string>();
+  const errors: string[] = [];
+
+  // Per-alias isolation: one provider's failure (e.g. a pi-repatch that lacks
+  // its OAuth export) must not take down the other provider's aliases.
   for (const alias of aliases) {
-    registerAnthropicAlias(pi, alias, oauthProvider, sourceModels);
+    try {
+      registerAlias(
+        pi,
+        alias,
+        PROVIDER_SPECS[alias.provider],
+        deps.getOAuthProvider(alias.provider),
+        sourceModels.get(alias.provider) ?? [],
+      );
+      providerIds.add(alias.providerId);
+    } catch (error) {
+      errors.push(`${alias.providerId}: ${errorMessage(error)}`);
+      // registerProvider replaces in place, so a failed re-registration can
+      // leave the previous (stale-config) registration installed yet
+      // untracked — the config-removal sweep above would never reclaim it.
+      pi.unregisterProvider(alias.providerId);
+    }
+  }
+
+  return { providerIds, errors };
+}
+
+function syncProviderEnv(
+  pi: SubAliasesExtensionAPI,
+  ctx: RefreshContext,
+  aliases: readonly AliasDefinition[],
+  allowSubBarRefresh: boolean,
+): void {
+  for (const provider of PROVIDER_NAMES) {
+    const spec = PROVIDER_SPECS[provider];
+    if (!spec.syncEnv) continue;
+
+    const providerIds = new Set(
+      aliases
+        .filter((alias) => alias.provider === provider)
+        .map((alias) => alias.providerId),
+    );
+    spec.syncEnv(ctx, {
+      isAliasProvider: (providerId) => providerIds.has(providerId),
+      ...(allowSubBarRefresh ? { events: pi.events } : {}),
+    });
   }
 }
 
 function syncAliasStatus(
   ctx: RefreshContext | undefined,
-  aliases: readonly ClaudeAliasDefinition[],
+  aliases: readonly AliasDefinition[],
 ): void {
   if (!ctx?.hasUI) return;
   ctx.ui.setStatus(FOOTER_STATUS_KEY, getFooterStatusText(ctx.model, aliases));
 }
 
-function reportConfigErrors(
-  errors: readonly string[],
-  ctx: RefreshContext | undefined,
-  lastErrorSignature: string | undefined,
-): void {
-  const signature = errors.join("\n");
-  if (!signature || signature === lastErrorSignature) return;
-
-  const message = `claude-alias config: ${errors[0]}`;
-  if (ctx?.hasUI) {
-    ctx.ui.notify(message, "error");
-    return;
-  }
-
-  console.warn(message);
-}
-
-function isAnthropicModel(model: unknown): model is AnthropicModel {
-  return hasApi(model) && model.api === BUILTIN_API;
+function isModelForApi(value: unknown, api: string): value is AliasModel {
+  return hasApi(value) && value.api === api;
 }
 
 function isRefreshContext(value: unknown): value is RefreshContext {
@@ -320,17 +322,13 @@ function isRefreshContext(value: unknown): value is RefreshContext {
   );
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function hasApi(value: unknown): value is { api: unknown } {
   return typeof value === "object" && value !== null && "api" in value;
 }
 
 function getRegistrationSignature(
-  aliases: readonly ClaudeAliasDefinition[],
-  models: readonly AnthropicModel[],
+  aliases: readonly AliasDefinition[],
+  sourceModels: ReadonlyMap<ProviderName, readonly AliasModel[]>,
 ): string {
   return JSON.stringify({
     aliases: aliases.map((alias) => ({
@@ -338,24 +336,13 @@ function getRegistrationSignature(
       handle: alias.handle,
       label: alias.label,
     })),
-    models: models.map((model) => ({
-      id: model.id,
-      name: model.name,
-      api: model.api,
-      baseUrl: model.baseUrl,
-      reasoning: model.reasoning,
-      input: [...model.input],
-      cost: model.cost,
-      contextWindow: model.contextWindow,
-      maxTokens: model.maxTokens,
-      thinkingLevelMap: model.thinkingLevelMap,
-      headers: model.headers,
-      compat: model.compat,
-    })),
+    // Serialize the models wholesale so a future pi Model field cannot be
+    // silently excluded from change detection.
+    models: PROVIDER_NAMES.map((provider) => sourceModels.get(provider) ?? []),
   });
 }
 
-function cloneAliasModel(model: AnthropicModel, label: string): AnthropicModel {
+function cloneAliasModel(model: AliasModel, label: string): AliasModel {
   const cloned = structuredClone(model);
   cloned.name = `${model.name} (${label})`;
   return cloned;

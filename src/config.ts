@@ -1,52 +1,49 @@
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  PROVIDER_SPECS,
+  isProviderName,
+  type ProviderName,
+} from "./providers.js";
+import { errorMessage, isRecord } from "./shared.js";
 
-export const CLAUDE_ALIAS_CONFIG_FILE = "claude-alias.json";
+const SUB_ALIASES_CONFIG_FILE = "sub-aliases.json";
+const DEFAULT_PROVIDER: ProviderName = "anthropic";
 
-export interface ClaudeAliasDefinition {
+export type AliasDefinition = {
+  provider: ProviderName;
   slug: string;
   providerId: string;
   handle: string;
   label: string;
-}
+};
 
-export interface ClaudeAliasLoadOptions {
+export type AliasLoadOptions = {
   cwd?: string;
   projectTrusted?: boolean;
   agentDir?: string;
-}
+};
 
-export interface ClaudeAliasLoadResult {
-  aliases: ClaudeAliasDefinition[];
+export type AliasLoadResult = {
+  aliases: AliasDefinition[];
   errors: string[];
+};
+
+export function getGlobalAliasConfigPath(agentDir = getAgentDir()): string {
+  return join(agentDir, SUB_ALIASES_CONFIG_FILE);
 }
 
-interface ParsedAliasFile {
-  aliases: ClaudeAliasDefinition[] | undefined;
-  errors: string[];
+export function getProjectAliasConfigPath(cwd: string): string {
+  return join(cwd, CONFIG_DIR_NAME, SUB_ALIASES_CONFIG_FILE);
 }
 
-export function getGlobalClaudeAliasConfigPath(
-  agentDir = getAgentDir(),
-): string {
-  return join(agentDir, CLAUDE_ALIAS_CONFIG_FILE);
-}
-
-export function getProjectClaudeAliasConfigPath(cwd: string): string {
-  return join(cwd, CONFIG_DIR_NAME, CLAUDE_ALIAS_CONFIG_FILE);
-}
-
-export function loadClaudeAliases(
-  options: ClaudeAliasLoadOptions = {},
-): ClaudeAliasLoadResult {
-  const global = parseAliasFile(
-    getGlobalClaudeAliasConfigPath(options.agentDir),
-  );
+export function loadAliases(options: AliasLoadOptions = {}): AliasLoadResult {
+  const global = parseAliasFile(getGlobalAliasConfigPath(options.agentDir));
   const project =
     options.cwd && options.projectTrusted
-      ? parseAliasFile(getProjectClaudeAliasConfigPath(options.cwd))
-      : { aliases: undefined, errors: [] };
+      ? parseAliasFile(getProjectAliasConfigPath(options.cwd))
+      : { aliases: [], errors: [] };
 
   const merged = mergeAliases(global.aliases, project.aliases);
   const validated = validateMergedAliases(merged);
@@ -57,18 +54,14 @@ export function loadClaudeAliases(
   };
 }
 
-export function parseClaudeAliasConfig(
-  raw: string,
-  source: string,
-): ClaudeAliasLoadResult {
+export function parseAliasConfig(raw: string, source: string): AliasLoadResult {
   let value: unknown;
   try {
     value = JSON.parse(raw);
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+  } catch (error) {
     return {
       aliases: [],
-      errors: [`Invalid JSON in ${source}: ${message}`],
+      errors: [`Invalid JSON in ${source}: ${errorMessage(error)}`],
     };
   }
 
@@ -89,88 +82,99 @@ export function parseClaudeAliasConfig(
     };
   }
 
-  const aliases: ClaudeAliasDefinition[] = [];
+  const aliases: AliasDefinition[] = [];
   const errors: string[] = [];
 
   for (const [index, entry] of aliasesValue.entries()) {
-    const parsed = parseClaudeAliasEntry(entry);
-    if (parsed) {
-      aliases.push(parsed);
+    const parsed = parseAliasEntry(entry);
+    if ("alias" in parsed) {
+      aliases.push(parsed.alias);
     } else {
-      errors.push(`Invalid alias entry at ${source} aliases[${index}].`);
+      errors.push(
+        `Invalid alias entry at ${source} aliases[${index}]: ${parsed.error}.`,
+      );
     }
   }
 
   return { aliases, errors };
 }
 
-function parseAliasFile(path: string): ParsedAliasFile {
+function parseAliasFile(path: string): AliasLoadResult {
   if (!existsSync(path)) {
-    return { aliases: undefined, errors: [] };
+    return { aliases: [], errors: [] };
   }
 
-  const result = parseClaudeAliasConfig(readFileSync(path, "utf8"), path);
-  return { aliases: result.aliases, errors: result.errors };
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (error) {
+    return {
+      aliases: [],
+      errors: [`Cannot read alias config at ${path}: ${errorMessage(error)}`],
+    };
+  }
+
+  return parseAliasConfig(raw, path);
 }
 
-function parseClaudeAliasEntry(
+function parseAliasEntry(
   value: unknown,
-): ClaudeAliasDefinition | undefined {
+): { alias: AliasDefinition } | { error: string } {
   if (!isRecord(value)) {
-    return undefined;
+    return { error: "expected an object" };
+  }
+
+  const provider =
+    value.provider === undefined ? DEFAULT_PROVIDER : value.provider;
+  if (!isProviderName(provider)) {
+    return { error: `unknown provider ${JSON.stringify(value.provider)}` };
   }
 
   const slug = normalizeSlug(value.slug);
   if (!slug) {
-    return undefined;
+    return { error: "missing or invalid slug" };
   }
 
-  const label = normalizeLabel(value.label) ?? titleCaseSlug(slug);
-  const handle = normalizeHandle(value.handle) ?? `claude-${slug}`;
-
+  const spec = PROVIDER_SPECS[provider];
   return {
-    slug,
-    providerId: `anthropic-${slug}`,
-    handle,
-    label,
+    alias: {
+      provider,
+      slug,
+      providerId: `${spec.builtin}-${slug}`,
+      handle: normalizeSlug(value.handle) ?? `${spec.handlePrefix}-${slug}`,
+      label: normalizeLabel(value.label) ?? titleCaseSlug(slug),
+    },
   };
 }
 
+// providerId is derived 1:1 from (provider, slug), so keying on it merges
+// project entries over global ones per (provider, slug).
 function mergeAliases(
-  globalAliases: ClaudeAliasDefinition[] | undefined,
-  projectAliases: ClaudeAliasDefinition[] | undefined,
-): ClaudeAliasDefinition[] {
-  const merged = new Map<string, ClaudeAliasDefinition>();
+  globalAliases: readonly AliasDefinition[],
+  projectAliases: readonly AliasDefinition[],
+): AliasDefinition[] {
+  const merged = new Map<string, AliasDefinition>();
 
-  for (const alias of globalAliases ?? []) {
-    merged.set(alias.slug, alias);
-  }
-  for (const alias of projectAliases ?? []) {
-    merged.set(alias.slug, alias);
+  for (const alias of [...globalAliases, ...projectAliases]) {
+    merged.set(alias.providerId, alias);
   }
 
   return [...merged.values()];
 }
 
 function validateMergedAliases(
-  aliases: readonly ClaudeAliasDefinition[],
-): ClaudeAliasLoadResult {
+  aliases: readonly AliasDefinition[],
+): AliasLoadResult {
   const errors: string[] = [];
-  const seenProviderIds = new Set<string>();
   const seenHandles = new Set<string>();
-  const valid: ClaudeAliasDefinition[] = [];
+  const valid: AliasDefinition[] = [];
 
   for (const alias of aliases) {
-    if (seenProviderIds.has(alias.providerId)) {
-      errors.push(`Duplicate provider id: ${alias.providerId}`);
-      continue;
-    }
     if (seenHandles.has(alias.handle)) {
       errors.push(`Duplicate alias handle: ${alias.handle}`);
       continue;
     }
 
-    seenProviderIds.add(alias.providerId);
     seenHandles.add(alias.handle);
     valid.push(alias);
   }
@@ -192,23 +196,6 @@ function normalizeSlug(value: unknown): string | undefined {
   return slug || undefined;
 }
 
-function normalizeHandle(value: unknown): string | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (typeof value !== "string") {
-    return undefined;
-  }
-
-  const handle = value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
-  return handle || undefined;
-}
-
 function normalizeLabel(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
@@ -224,8 +211,4 @@ function titleCaseSlug(slug: string): string {
     .filter(Boolean)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join(" ");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
