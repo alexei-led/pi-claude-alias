@@ -2,8 +2,7 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { getModels, type Model } from "@earendil-works/pi-ai/compat";
-import { anthropicOAuthProvider } from "@earendil-works/pi-ai/oauth";
+import { getModels, anthropicOAuth, type Model } from "@earendil-works/pi-ai/compat";
 import {
   loadClaudeAliases,
   type ClaudeAliasDefinition,
@@ -34,8 +33,8 @@ type RefreshContext = Pick<
 >;
 
 type AnthropicOAuthProvider = Pick<
-  typeof anthropicOAuthProvider,
-  "name" | "login" | "refreshToken" | "getApiKey"
+  typeof anthropicOAuth,
+  "name" | "login" | "refresh" | "toAuth"
 >;
 
 export type AnthropicAliasDeps = {
@@ -49,7 +48,7 @@ const defaultGetModels: AnthropicAliasDeps["getModels"] = (provider) =>
 
 const DEFAULT_DEPS: AnthropicAliasDeps = {
   getModels: defaultGetModels,
-  oauthProvider: anthropicOAuthProvider,
+  oauthProvider: anthropicOAuth,
   loadAliases: loadClaudeAliases,
 };
 

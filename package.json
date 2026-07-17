@@ -1,6 +1,6 @@
 {
   "name": "pi-claude-alias",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Pi extension that adds personal and work aliases for the built-in Anthropic OAuth provider.",
   "type": "module",
   "main": "./src/index.ts",
