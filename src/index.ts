@@ -2,12 +2,12 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import {
-  getModels,
-  anthropicOAuth,
-  type Model,
-  type OAuthCredentials,
-  type OAuthLoginCallbacks,
+import * as piAiCompat from "@earendil-works/pi-ai/compat";
+import type {
+  Model,
+  OAuthAuth,
+  OAuthCredentials,
+  OAuthLoginCallbacks,
 } from "@earendil-works/pi-ai/compat";
 import {
   loadClaudeAliases,
@@ -52,12 +52,12 @@ export type AnthropicAliasDeps = {
 };
 
 const defaultGetModels: AnthropicAliasDeps["getModels"] = (provider) =>
-  provider === BUILTIN_PROVIDER ? getModels(BUILTIN_PROVIDER) : [];
+  provider === BUILTIN_PROVIDER ? piAiCompat.getModels(BUILTIN_PROVIDER) : [];
 
 // pi's runtime (provider-composer) consumes the pre-0.80 oauth shape:
 // old-style login callbacks, refreshToken, and a synchronous getApiKey.
 // Adapt the 0.80 OAuthAuth interface (login(interaction)/refresh/toAuth).
-function wrapOAuth(oauth: typeof anthropicOAuth): AnthropicOAuthProvider {
+function wrapOAuth(oauth: OAuthAuth): AnthropicOAuthProvider {
   return {
     name: oauth.name,
     login: (callbacks) =>
@@ -106,11 +106,24 @@ function wrapOAuth(oauth: typeof anthropicOAuth): AnthropicOAuthProvider {
   };
 }
 
-const defaultDeps = (): AnthropicAliasDeps => ({
-  getModels: defaultGetModels,
-  oauthProvider: wrapOAuth(anthropicOAuth),
-  loadAliases: loadClaudeAliases,
-});
+// Stock pi-ai 0.80 compat does not re-export the OAuth providers; the
+// pi-repatch'd install does. Resolve lazily via the namespace so the module
+// still loads (and tests run) against stock pi-ai.
+const defaultDeps = (): AnthropicAliasDeps => {
+  const { anthropicOAuth } = piAiCompat as Partial<{
+    anthropicOAuth: OAuthAuth;
+  }>;
+  if (!anthropicOAuth) {
+    throw new Error(
+      "@earendil-works/pi-ai/compat does not export anthropicOAuth; run pi-repatch",
+    );
+  }
+  return {
+    getModels: defaultGetModels,
+    oauthProvider: wrapOAuth(anthropicOAuth),
+    loadAliases: loadClaudeAliases,
+  };
+};
 
 export default function claudeAliases(pi: ExtensionAPI): void {
   registerClaudeAliases(pi);
