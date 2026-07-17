@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+// Resolve against the repo root so the test works from any cwd.
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 interface PackFile {
   path: string;
@@ -21,7 +24,7 @@ interface PackResult {
 }
 
 test("npm pack only includes runtime package assets", async (t) => {
-  const packDir = await mkdtemp(join(tmpdir(), "pi-claude-alias-pack-"));
+  const packDir = await mkdtemp(join(tmpdir(), "pi-sub-aliases-pack-"));
   t.after(async () => {
     await rm(packDir, { recursive: true, force: true });
   });
@@ -29,10 +32,12 @@ test("npm pack only includes runtime package assets", async (t) => {
   const { stdout } = await execFileAsync(
     "npm",
     ["pack", "--json", "--pack-destination", packDir],
-    { maxBuffer: 1024 * 1024 },
+    { cwd: REPO_ROOT, maxBuffer: 1024 * 1024 },
   );
   const result = parsePackResult(stdout);
-  const manifest = parsePackageManifest(await readFile("package.json", "utf8"));
+  const manifest = parsePackageManifest(
+    await readFile(join(REPO_ROOT, "package.json"), "utf8"),
+  );
   const files = new Set(result.files.map((file) => file.path));
 
   assert.equal(result.name, manifest.name);

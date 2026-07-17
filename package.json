@@ -1,7 +1,7 @@
 {
-  "name": "pi-claude-alias",
-  "version": "0.1.2",
-  "description": "Pi extension that adds personal and work aliases for the built-in Anthropic OAuth provider.",
+  "name": "pi-sub-aliases",
+  "version": "0.2.0",
+  "description": "Pi extension that adds named subscription-account aliases for the built-in Anthropic and OpenAI Codex OAuth providers.",
   "type": "module",
   "main": "./src/index.ts",
   "exports": "./src/index.ts",
@@ -14,17 +14,20 @@
     "pi-coding-agent",
     "anthropic",
     "claude",
+    "openai",
+    "codex",
+    "chatgpt",
     "oauth",
     "alias"
   ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/alexei-led/pi-claude-alias.git"
+    "url": "git+https://github.com/alexei-led/pi-sub-aliases.git"
   },
-  "homepage": "https://github.com/alexei-led/pi-claude-alias#readme",
+  "homepage": "https://github.com/alexei-led/pi-sub-aliases#readme",
   "bugs": {
-    "url": "https://github.com/alexei-led/pi-claude-alias/issues"
+    "url": "https://github.com/alexei-led/pi-sub-aliases/issues"
   },
   "publishConfig": {
     "access": "public"
@@ -56,6 +59,6 @@
     "extensions": [
       "./src/index.ts"
     ],
-    "image": "https://raw.githubusercontent.com/alexei-led/pi-claude-alias/main/assets/alias.png"
+    "image": "https://raw.githubusercontent.com/alexei-led/pi-sub-aliases/main/assets/alias.png"
   }
 }
