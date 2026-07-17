@@ -1,5 +1,7 @@
 # pi-sub-aliases
 
+[![npm](https://img.shields.io/npm/v/pi-sub-aliases)](https://www.npmjs.com/package/pi-sub-aliases)
+[![CI](https://github.com/alexei-led/pi-sub-aliases/actions/workflows/ci.yml/badge.svg)](https://github.com/alexei-led/pi-sub-aliases/actions/workflows/ci.yml)
 [![Pi extension](https://img.shields.io/badge/pi-extension-6f42c1)](#install)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
